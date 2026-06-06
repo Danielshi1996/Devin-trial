@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "persistent-memory-agent"
+version = "0.1.0"
+description = "Lightweight SQLite-backed persistent memory for agentic systems."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Danielshi1996" }]
+dependencies = []
+
+[project.scripts]
+memory-agent = "memory_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
