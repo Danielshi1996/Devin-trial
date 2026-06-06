@@ -68,9 +68,13 @@ score = token_overlap + phrase_bonus + importance + confidence + recency + acces
 
 This keeps the system dependency-light and testable. A vector scorer can be added later behind the same `MemoryStore.search()` contract.
 
+`search()` is a read by default. Access counters are updated only when callers opt in with `record_access=True`; `context()` opts in because context injection implies the memories were actually used.
+
 ## Persistence
 
 SQLite is the default store because it is durable, local-first, simple to back up, and works in constrained agent environments. The schema is initialized automatically on first use.
+
+Duplicate writes can be suppressed with `deduplicate=True`, which the Hermes adapter uses for replay-safe lifecycle calls. `MemoryStore.prune(namespace=..., max_memories=...)` removes low-priority overflow when a namespace grows beyond its configured budget.
 
 ## Hermes integration
 
@@ -120,5 +124,6 @@ This makes retrieval feel relational instead of purely factual.
 - Hermes adapter seam.
 - Person-context files and relational curation.
 - Context composition for character + recent + archive memory.
+- Replay-safe deduplication and pruning support.
 - Unit tests for persistence, ranking, and lifecycle hooks.
 - CI running stdlib unit tests and compile checks.

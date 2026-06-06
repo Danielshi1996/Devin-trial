@@ -30,7 +30,7 @@ class MemoryAugmentedAgent:
         prompt = f"{memory_context}\n\nUser: {message}"
         response = self.responder(prompt)
         self.store.remember(
-            f"User asked: {message}\nAssistant answered: {response}",
+            _episode_content(message, response),
             namespace=self.namespace,
             kind="episode",
             summary=f"Conversation about: {message[:120]}",
@@ -42,3 +42,11 @@ class MemoryAugmentedAgent:
 
 def _echo_responder(prompt: str) -> str:
     return f"Received with memory context:\n{prompt}"
+
+
+def _episode_content(message: str, response: str) -> str:
+    if response.startswith("Received with memory context:"):
+        safe_response = "Assistant produced a response using retrieved memory context."
+    else:
+        safe_response = response[:2_000]
+    return f"User asked: {message[:2_000]}\nAssistant answered: {safe_response}"

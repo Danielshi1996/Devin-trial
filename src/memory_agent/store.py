@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -7,7 +8,8 @@ import sqlite3
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
+from types import MappingProxyType
+from typing import Iterable, Mapping
 
 from memory_agent.models import JSONValue, MemoryQueryResult, MemoryRecord
 
@@ -16,12 +18,17 @@ TOKEN_RE = re.compile(r"[A-Za-z0-9_']+")
 
 class MemoryStore:
     def __init__(self, path: str | Path = ".memory.sqlite") -> None:
-        self.path = Path(path)
-        if self.path.parent != Path("."):
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = Path(path).expanduser()
+        self.path.resolve(strict=False).parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(self.path)
         self._connection.row_factory = sqlite3.Row
         self._initialize_schema()
+
+    def __enter__(self) -> "MemoryStore":
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        self.close()
 
     def remember(
         self,
@@ -32,7 +39,8 @@ class MemoryStore:
         summary: str | None = None,
         importance: float = 0.5,
         confidence: float = 1.0,
-        metadata: dict[str, JSONValue] | None = None,
+        metadata: Mapping[str, JSONValue] | None = None,
+        deduplicate: bool = False,
     ) -> MemoryRecord:
         normalized_content = content.strip()
         if not normalized_content:
@@ -43,14 +51,22 @@ class MemoryStore:
         normalized_summary = (summary or _default_summary(normalized_content)).strip()
         bounded_importance = _clamp(importance)
         bounded_confidence = _clamp(confidence)
-        metadata_json = json.dumps(metadata or {}, sort_keys=True)
+        metadata_dict = dict(metadata or {})
+        metadata_json = json.dumps(metadata_dict, sort_keys=True)
+        content_hash = _content_hash(namespace, kind, normalized_content)
+
+        if deduplicate:
+            existing = self._get_by_content_hash(content_hash)
+            if existing is not None:
+                return existing
 
         self._connection.execute(
             """
             INSERT INTO memories (
                 id, namespace, kind, content, summary, importance, confidence,
-                metadata_json, created_at, updated_at, last_accessed_at, access_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
+                metadata_json, content_hash, created_at, updated_at,
+                last_accessed_at, access_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
             """,
             (
                 memory_id,
@@ -61,6 +77,7 @@ class MemoryStore:
                 bounded_importance,
                 bounded_confidence,
                 metadata_json,
+                content_hash,
                 now,
                 now,
             ),
@@ -80,32 +97,44 @@ class MemoryStore:
             return None
         return _record_from_row(row)
 
+    def _get_by_content_hash(self, content_hash: str) -> MemoryRecord | None:
+        row = self._connection.execute(
+            "SELECT * FROM memories WHERE content_hash = ?",
+            (content_hash,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _record_from_row(row)
+
     def list_memories(
         self,
         *,
         namespace: str = "default",
         kind: str | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
     ) -> list[MemoryRecord]:
+        limit_clause = "" if limit is None else "LIMIT ?"
         if kind is None:
+            params: tuple[object, ...] = (namespace,) if limit is None else (namespace, limit)
             rows = self._connection.execute(
-                """
+                f"""
                 SELECT * FROM memories
                 WHERE namespace = ?
                 ORDER BY created_at DESC
-                LIMIT ?
+                {limit_clause}
                 """,
-                (namespace, limit),
+                params,
             ).fetchall()
         else:
+            params = (namespace, kind) if limit is None else (namespace, kind, limit)
             rows = self._connection.execute(
-                """
+                f"""
                 SELECT * FROM memories
                 WHERE namespace = ? AND kind = ?
                 ORDER BY created_at DESC
-                LIMIT ?
+                {limit_clause}
                 """,
-                (namespace, kind, limit),
+                params,
             ).fetchall()
         return [_record_from_row(row) for row in rows]
 
@@ -116,14 +145,21 @@ class MemoryStore:
         namespace: str = "default",
         kind: str | None = None,
         limit: int = 5,
+        candidate_limit: int | None = None,
+        record_access: bool = False,
     ) -> list[MemoryQueryResult]:
         query_tokens = _tokens(query)
         if not query_tokens:
             return []
 
-        candidates = self.list_memories(namespace=namespace, kind=kind, limit=1000)
+        candidates = self.list_memories(
+            namespace=namespace,
+            kind=kind,
+            limit=candidate_limit,
+        )
+        now = _utc_now()
         ranked = [
-            _score_memory(memory, query, query_tokens)
+            _score_memory(memory, query, query_tokens, now)
             for memory in candidates
         ]
         results = [
@@ -131,7 +167,8 @@ class MemoryStore:
             for result in sorted(ranked, key=lambda item: item.score, reverse=True)
             if result.score > 0
         ][:limit]
-        self._record_access(result.memory.id for result in results)
+        if record_access:
+            self._record_access(result.memory.id for result in results)
         return results
 
     def context(
@@ -141,7 +178,12 @@ class MemoryStore:
         namespace: str = "default",
         limit: int = 5,
     ) -> str:
-        results = self.search(query, namespace=namespace, limit=limit)
+        results = self.search(
+            query,
+            namespace=namespace,
+            limit=limit,
+            record_access=True,
+        )
         if not results:
             return "Memory context: no relevant memories found."
         bullets = [
@@ -158,6 +200,28 @@ class MemoryStore:
         self._connection.commit()
         return cursor.rowcount > 0
 
+    def prune(self, *, namespace: str = "default", max_memories: int = 1000) -> int:
+        if max_memories < 1:
+            raise ValueError("max_memories must be positive")
+        rows = self._connection.execute(
+            """
+            SELECT id FROM memories
+            WHERE namespace = ?
+            ORDER BY importance DESC, access_count DESC, updated_at DESC
+            LIMIT -1 OFFSET ?
+            """,
+            (namespace, max_memories),
+        ).fetchall()
+        ids = [row["id"] for row in rows]
+        if not ids:
+            return 0
+        self._connection.executemany(
+            "DELETE FROM memories WHERE id = ?",
+            [(memory_id,) for memory_id in ids],
+        )
+        self._connection.commit()
+        return len(ids)
+
     def close(self) -> None:
         self._connection.close()
 
@@ -173,6 +237,7 @@ class MemoryStore:
                 importance REAL NOT NULL,
                 confidence REAL NOT NULL,
                 metadata_json TEXT NOT NULL,
+                content_hash TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_accessed_at TEXT,
@@ -186,7 +251,33 @@ class MemoryStore:
             ON memories(namespace, kind)
             """
         )
+        existing_columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(memories)").fetchall()
+        }
+        if "content_hash" not in existing_columns:
+            self._connection.execute("ALTER TABLE memories ADD COLUMN content_hash TEXT")
+            self._backfill_content_hashes()
+        self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memories_content_hash
+            ON memories(content_hash)
+            WHERE content_hash IS NOT NULL
+            """
+        )
         self._connection.commit()
+
+    def _backfill_content_hashes(self) -> None:
+        rows = self._connection.execute(
+            "SELECT id, namespace, kind, content FROM memories WHERE content_hash IS NULL"
+        ).fetchall()
+        self._connection.executemany(
+            "UPDATE memories SET content_hash = ? WHERE id = ?",
+            [
+                (_content_hash(row["namespace"], row["kind"], row["content"]), row["id"])
+                for row in rows
+            ],
+        )
 
     def _record_access(self, memory_ids: Iterable[str]) -> None:
         ids = list(memory_ids)
@@ -208,6 +299,7 @@ def _score_memory(
     memory: MemoryRecord,
     query: str,
     query_tokens: set[str],
+    now: datetime,
 ) -> MemoryQueryResult:
     haystack = f"{memory.summary} {memory.content}"
     memory_tokens = _tokens(haystack)
@@ -219,7 +311,8 @@ def _score_memory(
         score += len(overlap) / math.sqrt(max(len(query_tokens), 1))
         reasons.append("token_overlap")
 
-    if query.strip().lower() in haystack.lower():
+    normalized_query = query.strip().lower()
+    if len(normalized_query) >= 4 and normalized_query in haystack.lower():
         score += 1.5
         reasons.append("phrase_match")
 
@@ -231,7 +324,7 @@ def _score_memory(
         score += memory.confidence * 0.2
         reasons.append("confidence")
 
-    age_seconds = max((_utc_now() - memory.created_at).total_seconds(), 0)
+    age_seconds = max((now - memory.created_at).total_seconds(), 0)
     recency = 1 / (1 + age_seconds / 86_400)
     score += recency * 0.1
     reasons.append("recency")
@@ -252,7 +345,7 @@ def _record_from_row(row: sqlite3.Row) -> MemoryRecord:
         summary=row["summary"],
         importance=row["importance"],
         confidence=row["confidence"],
-        metadata=_json_object_from_text(row["metadata_json"]),
+        metadata=MappingProxyType(_json_object_from_text(row["metadata_json"])),
         created_at=_parse_datetime(row["created_at"]),
         updated_at=_parse_datetime(row["updated_at"]),
         last_accessed_at=_parse_datetime(row["last_accessed_at"])
@@ -287,7 +380,10 @@ def _serialize_datetime(value: datetime) -> str:
 
 
 def _parse_datetime(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"invalid datetime in memory store: {value!r}") from None
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
@@ -314,3 +410,8 @@ def _json_value(value: object) -> JSONValue:
             for key, item in value.items()
         }
     return str(value)
+
+
+def _content_hash(namespace: str, kind: str, content: str) -> str:
+    raw = "\x1f".join([namespace, kind, content])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()

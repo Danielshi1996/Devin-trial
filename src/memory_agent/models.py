@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from types import MappingProxyType
+from typing import Mapping
 
 JSONScalar = None | bool | int | float | str
 JSONValue = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
@@ -26,6 +28,10 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def empty_metadata() -> Mapping[str, JSONValue]:
+    return MappingProxyType({})
+
+
 @dataclass(frozen=True)
 class MemoryRecord:
     id: str
@@ -35,7 +41,7 @@ class MemoryRecord:
     summary: str
     importance: float
     confidence: float
-    metadata: dict[str, JSONValue] = field(default_factory=dict)
+    metadata: Mapping[str, JSONValue] = field(default_factory=empty_metadata)
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     last_accessed_at: datetime | None = None

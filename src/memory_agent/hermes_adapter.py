@@ -39,6 +39,7 @@ class HermesMemoryAdapter:
                 summary=f"User message: {user_message[:120]}",
                 importance=0.35,
                 metadata=shared_metadata,
+                deduplicate=True,
             ),
             self.store.remember(
                 assistant_response,
@@ -47,6 +48,7 @@ class HermesMemoryAdapter:
                 summary=f"Assistant response: {assistant_response[:120]}",
                 importance=0.3,
                 metadata=shared_metadata,
+                deduplicate=True,
             ),
         ]
 
@@ -68,4 +70,5 @@ class HermesMemoryAdapter:
             importance=importance,
             confidence=confidence,
             metadata={"source": "explicit_memory", **(metadata or {})},
+            deduplicate=True,
         )
