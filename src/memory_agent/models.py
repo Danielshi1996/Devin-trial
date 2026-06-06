@@ -2,9 +2,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 
 JSONScalar = None | bool | int | float | str
 JSONValue = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
+
+
+class RelationalMemoryKind(StrEnum):
+    DECISION = "decision"
+    EPISODE = "episode"
+    FACT = "fact"
+    INSIDE_JOKE = "inside_joke"
+    MOMENT = "moment"
+    OBSERVATION = "observation"
+    OPEN_LOOP = "open_loop"
+    PREFERENCE = "preference"
+    RELATIONSHIP = "relationship"
+    SELF_MODEL = "self_model"
+    TENSION = "tension"
 
 
 def utc_now() -> datetime:

@@ -8,6 +8,8 @@ The package provides:
 - Deterministic lexical retrieval with recency, importance, and access-frequency ranking.
 - A small agent wrapper that injects relevant memories into each turn.
 - A Hermes adapter seam that can be called from existing agent lifecycle hooks.
+- A relational person context (`character.md`, `you.md`, `recent.md`, `reflections.md`).
+- A curator that extracts decisions, tensions, open loops, inside jokes, and moments.
 - A CLI for local smoke tests and manual memory inspection.
 
 ## Quick start
@@ -19,6 +21,32 @@ python3 -m memory_agent.cli --db .memory.sqlite remember "Daniel prefers concise
 python3 -m memory_agent.cli --db .memory.sqlite search "communication preference"
 python3 -m memory_agent.cli --db .memory.sqlite ask "How should I communicate with Daniel?"
 ```
+
+## Relational memory quick start
+
+```bash
+python3 -m memory_agent.cli init-person ./LinZhi
+cat > /tmp/transcript.md <<'EOF'
+Daniel: I think the agent should have friction with me, not just agree.
+Lin Zhi: Then the first product problem is why you would tell it the truth.
+Daniel: Let's make that the center of the next iteration.
+EOF
+python3 -m memory_agent.cli reflect ./LinZhi /tmp/transcript.md
+python3 -m memory_agent.cli context ./LinZhi "I have a scattered idea"
+```
+
+This creates a local person folder:
+
+```text
+LinZhi/
+├── character.md
+├── you.md
+├── recent.md
+├── reflections.md
+└── archive.sqlite
+```
+
+`recent.md` is the living relationship journal. `archive.sqlite` is the searchable long-term memory.
 
 ## Integration shape
 

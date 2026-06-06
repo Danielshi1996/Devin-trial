@@ -4,6 +4,8 @@
 
 Replace a Hermes-style stateless agent with a lightweight agentic frame that has persistent, inspectable memory.
 
+The second design goal is relational: the agent should not only remember facts, but preserve the moments that make it feel like the same person tomorrow.
+
 ## Non-goals
 
 - No hosted vector database requirement.
@@ -22,6 +24,17 @@ user turn
        └─ MemoryStore.remember(...)
 ```
 
+Relational mode adds controlled context files around the archive:
+
+```text
+person/
+  character.md      who the agent is
+  you.md            who the human is from the agent's point of view
+  recent.md         living moments that changed something
+  reflections.md    private synthesis / alone time
+  archive.sqlite    durable searchable memory
+```
+
 ## Memory model
 
 Each memory is a durable record:
@@ -34,6 +47,16 @@ Each memory is a durable record:
 - `confidence`: 0.0-1.0 trust signal.
 - `metadata`: JSON for source IDs, tool names, task IDs, or external references.
 - timestamps and access counters for recency/frequency ranking.
+
+Relational memory uses additional `kind` values:
+
+- `moment`: emotionally meaningful exchange.
+- `tension`: disagreement, friction, or unresolved conflict.
+- `open_loop`: a loose thread to return to later.
+- `inside_joke`: shared language or humor.
+- `decision`: something chosen together.
+- `self_model`: what the agent believes about who the human is becoming.
+- `relationship`: what the agent believes is true between the two of them.
 
 ## Retrieval
 
@@ -59,10 +82,43 @@ The adapter exposes lifecycle hooks:
 
 If Hermes is unavailable, `MemoryAugmentedAgent` provides a tiny callable-responder wrapper for end-to-end use.
 
+## Relational curation
+
+Raw conversation is not automatically treated as durable memory. `MemoryCurator` asks a narrower question:
+
+```text
+What happened here that would make tomorrow's conversation worse if forgotten?
+```
+
+The current implementation is deterministic and dependency-free. It scans transcript sentences for high-signal categories:
+
+- decisions
+- feelings / moments
+- tension / friction
+- inside jokes
+- open loops
+
+The curator writes selected memories to `archive.sqlite` and appends a compact bullet list to `recent.md`.
+
+## Context composition
+
+`ContextComposer` builds a prompt context from:
+
+1. `character.md`
+2. `you.md`
+3. `recent.md`
+4. `reflections.md`
+5. top-K relevant archive memories
+6. current user message
+
+This makes retrieval feel relational instead of purely factual.
+
 ## Shipment checklist
 
 - Library API for memory CRUD and retrieval.
 - CLI for manual operations.
 - Hermes adapter seam.
+- Person-context files and relational curation.
+- Context composition for character + recent + archive memory.
 - Unit tests for persistence, ranking, and lifecycle hooks.
 - CI running stdlib unit tests and compile checks.
